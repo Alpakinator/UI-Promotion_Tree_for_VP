@@ -14,12 +14,10 @@ include("ButtonManager")
 include("PipeManager")
 include("PromotionUtils")
 include("PromotionClassCatalog")
-include("PromotionEmbedding")
-include("PromotionLayout")
-include("PromotionAcceptance")
+include("PromotionTreeStoredRows")
+include("PromotionTreeLayout")
 include("PromotionReviewedLayouts")
 include("PromotionPresentation")
-include("PromotionDenseLayout")
 include("PromotionHover")
 include("SidebarCard")
 include("PromotionClassPlanner")
@@ -278,6 +276,7 @@ function PlacePromotions(liveUnit, classKey, sourceX, sourceY)
   end
   local graphSeconds = perfClock and perfClock() - graphStart
   local layoutSeconds, drawSeconds, cacheHit = nil, nil, nil
+  local layoutMethod, canvasWidth = "none", 0
   local viewport = ResolvePromotionViewport()
   local originX, originY = viewport.x, viewport.y
   local viewportW, viewportH = viewport.width, viewport.height
@@ -307,42 +306,8 @@ function PlacePromotions(liveUnit, classKey, sourceX, sourceY)
     unavailable("No promotions are available for this unit class.")
   else
     local layoutStart = perfClock and perfClock()
-    local layout
-    layout, cacheHit = PromotionLayoutCached(graph, {
-      buttonW = promotionCardWidth,
-      buttonH = promotionCardHeight,
-      viewportW = viewportW,
-      viewportH = viewportH,
-      padding = 24,
-      pipeHalfWidth = 4,
-      underpassHalfGap = 10,
-    })
-    local renderedClear, renderReason = true, nil
-    if layout and layout.valid then
-      renderedClear, renderReason = PromotionRenderedCardClear(
-        layout,
-        promotionCardWidth,
-        promotionCardHeight,
-        ButtonManagerGetCardWidth()
-      )
-    end
-    if
-      usesLargeCards
-      and (
-        not layout
-        or layout.valid == false
-        or #(layout.violations or {}) > 0
-        or not renderedClear
-      )
-    then
-      -- A dense tree may need the available Small-card artwork to keep every
-      -- prerequisite on the same fixed panel. Retry once with that geometry.
-      Resize(config.small)
-      Controls.ResizeButton:SetCheck(true)
-      viewport = ResolvePromotionViewport()
-      originX, originY = viewport.x, viewport.y
-      viewportW, viewportH = viewport.width, viewport.height
-      layout, cacheHit = PromotionLayoutCached(graph, {
+    local function solve()
+      return PromotionLayoutCached(graph, {
         buttonW = promotionCardWidth,
         buttonH = promotionCardHeight,
         viewportW = viewportW,
@@ -351,32 +316,30 @@ function PlacePromotions(liveUnit, classKey, sourceX, sourceY)
         pipeHalfWidth = 4,
         underpassHalfGap = 10,
       })
-      if layout and layout.valid then
-        renderedClear, renderReason = PromotionRenderedCardClear(
-          layout,
-          promotionCardWidth,
-          promotionCardHeight,
-          ButtonManagerGetCardWidth()
-        )
-      end
-      print("Promotion Tree: selected Small cards to fit all connections")
+    end
+    local layout
+    layout, cacheHit = solve()
+    if usesLargeCards and (layout.overflow or not layout.valid or #layout.buttons == 0) then
+      -- Normal cards do not fit even at the smallest scale; Small cards may.
+      Resize(config.small)
+      Controls.ResizeButton:SetCheck(true)
+      viewport = ResolvePromotionViewport()
+      originX, originY = viewport.x, viewport.y
+      viewportW, viewportH = viewport.width, viewport.height
+      layout, cacheHit = solve()
+      print("Promotion Tree: selected Small cards to fit the tree")
     end
     if perfClock then
       layoutSeconds = perfClock() - layoutStart
     end
-    if
-      not layout
-      or layout.valid == false
-      or #(layout.violations or {}) > 0
-      or not renderedClear
-    then
-      unavailable("This promotion tree could not be arranged within the display limits.")
-      for _, detail in ipairs(layout and layout.violations or {}) do
-        print("Promotion Tree layout: " .. tostring(detail))
-      end
-      if not renderedClear then
-        print("Promotion Tree rendered cards: " .. tostring(renderReason))
-      end
+    for _, detail in ipairs(layout.violations or {}) do
+      print("Promotion Tree layout: " .. tostring(detail))
+    end
+    if layout.overflow then
+      print("Promotion Tree: the tree is larger than the panel even at the smallest scale")
+    end
+    if #layout.buttons == 0 then
+      unavailable("This promotion tree could not be arranged.")
     else
       local drawStart = perfClock and perfClock()
       local drawn, reason =
@@ -388,24 +351,27 @@ function PlacePromotions(liveUnit, classKey, sourceX, sourceY)
         unavailable("This promotion tree could not be drawn within the display limits.")
         print("Promotion Tree renderer: " .. tostring(reason))
       end
+      layoutMethod = (layout.method or "?") .. (layout.stats and layout.stats.stored and " stored" or "")
+      canvasWidth = (layout.contentWidth or 0) * (layout.scale or 1)
     end
   end
-  -- Canvas growth happens in logical space and is uniformly fitted back into
-  -- this unchanged viewport. Never enlarge scroll content as a substitute.
+  -- Trees are fitted into the viewport by scale; one still wider at the
+  -- smallest scale widens the canvas, and the panel scrolls.
   AdjustClassGroupWidth(sidebarWidth)
-  AdjustBaseGroupWidth(viewportW + 20)
+  AdjustBaseGroupWidth(math.max(viewportW, canvasWidth) + 20)
   Controls.GroupsStack:CalculateSize()
   Controls.GroupsStack:ReprocessAnchoring()
   Controls.ScrollPanel:CalculateInternalSize()
   if perfClock then
     print(
       string.format(
-        "Promotion Tree CPU: graph=%.3fs layout=%.3fs draw=%.3fs total=%.3fs cache=%s",
+        "Promotion Tree CPU: graph=%.3fs layout=%.3fs draw=%.3fs total=%.3fs cache=%s method=%s",
         graphSeconds or 0,
         layoutSeconds or 0,
         drawSeconds or 0,
         perfClock() - perfStart,
-        cacheHit and "hit" or "miss"
+        cacheHit and "hit" or "miss",
+        layoutMethod
       )
     )
   end

@@ -149,6 +149,7 @@ function PromotionGraphFetchRows(membershipClass)
     -- Copy only the graph's fields before adding presentation metadata.
     local entry = {
       Type = row.Type,
+      ID = row.ID,
       PromotionPrereq = row.PromotionPrereq,
       Name = row.Description and Locale and Locale.ConvertTextKey(row.Description) or nil,
     }
@@ -477,6 +478,8 @@ function BuildPromotionGraph(classKey, liveUnit, profile)
         orParents = keptOrParents,
         name = nameOf[promotionType],
         family = GetPromotionBase(promotionType, nameOf[promotionType]),
+        -- Database order: base promotions come before unique-unit additions.
+        id = tonumber(member[promotionType].ID),
       }
     end
   end

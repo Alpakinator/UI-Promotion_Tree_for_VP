@@ -22,7 +22,7 @@ local function sortedCopy(values)
   return out
 end
 function PromotionLayoutKey(graph, geometry)
-  local out = { "presentation-v4-dense-fallback" }
+  local out = { "presentation-v5-channels" }
   for _, name in ipairs(sortedCopy(graph.order)) do
     out[#out + 1] = encodeKeyPart(name)
     local node = graph.nodes[name]
@@ -63,19 +63,6 @@ function PromotionLayoutKey(graph, geometry)
     out[#out + 1] = encodeKeyPart(k) .. encodeKeyPart(geometry[k])
   end
   return table.concat(out, "|")
-end
-
--- Run the exact LR planarity test on the effective prerequisite graph. This
--- remains correct when a mod adds promotions or changes Zulu prerequisites.
-function PromotionNonplanarCertificate(graph)
-  if type(PromotionPlanarEmbedding) ~= "function" then
-    return nil
-  end
-  local _, reason, status = PromotionPlanarEmbedding(graph, false)
-  if status ~= "nonplanar" then
-    return nil
-  end
-  return { kind = "lr_nonplanar", reason = reason }
 end
 
 local function between(v, a, b)
@@ -349,7 +336,6 @@ end
 function PromotionPrepareUnderpasses(layout, graph, geometry)
   layout.underpasses = {}
   layout.underpassOrientation = {}
-  layout.nonplanarCertificate = PromotionNonplanarCertificate(graph)
   local routes = {}
   for _, r in ipairs(layout.routes or {}) do
     routes[#routes + 1] = r
@@ -395,11 +381,8 @@ function PromotionPrepareUnderpasses(layout, graph, geometry)
           if x then
             crossings = crossings + 1
             if
-              layout.nonplanarCertificate
-              or (
-                type(geometry.readabilityCrossingBudget) == "number"
-                and geometry.readabilityCrossingBudget > 0
-              )
+              type(geometry.readabilityCrossingBudget) == "number"
+              and geometry.readabilityCrossingBudget > 0
             then
               local under, over, index, first, last = r, s, ri, a, b
               local horizontalRoute, horizontalIndex, hFirst, hLast
@@ -458,623 +441,63 @@ function PromotionPrepareUnderpasses(layout, graph, geometry)
   layout.crossings = crossings
   return layout
 end
--- A right/up/right route is monotone; right/up/left doubles back on X.
--- Score both axes so changing the dominant orientation does not hide detours.
-function PromotionRouteReadability(layout)
-  local score = {
-    backtrackingRoutes = 0,
-    axisReversals = 0,
-    backtrackingPixels = 0,
-    bends = 0,
-    totalLength = 0,
-  }
-  local all = {}
-  for _, route in ipairs(layout.routes or {}) do
-    all[#all + 1] = route
-  end
+-- Native pipe art and painted cards must both fit the finished geometry.
+local function drawable(layout, geometry)
+  local routes = {}
   for _, route in ipairs(layout.sourceRoutes or {}) do
-    all[#all + 1] = route
+    routes[#routes + 1] = route
   end
-  for _, route in ipairs(all) do
-    local points = route.points or {}
-    local sx, sy, lastAxis, reversals, length = 0, 0, nil, 0, 0
-    for i = 2, #points do
-      local dx, dy = points[i].x - points[i - 1].x, points[i].y - points[i - 1].y
-      local axis
-      if math.abs(dx) > 0.001 then
-        local sign = dx > 0 and 1 or -1
-        if sx ~= 0 and sign ~= sx then
-          reversals = reversals + 1
-        end
-        sx, axis = sign, "x"
-      end
-      if math.abs(dy) > 0.001 then
-        local sign = dy > 0 and 1 or -1
-        if sy ~= 0 and sign ~= sy then
-          reversals = reversals + 1
-        end
-        sy, axis = sign, "y"
-      end
-      if axis and lastAxis and axis ~= lastAxis then
-        score.bends = score.bends + 1
-      end
-      if axis then
-        lastAxis = axis
-      end
-      length = length + math.abs(dx) + math.abs(dy)
-    end
-    if reversals > 0 then
-      score.backtrackingRoutes = score.backtrackingRoutes + 1
-    end
-    score.axisReversals = score.axisReversals + reversals
-    if #points >= 2 then
-      local first, last = points[1], points[#points]
-      score.backtrackingPixels = score.backtrackingPixels
-        + math.max(0, (length - math.abs(last.x - first.x) - math.abs(last.y - first.y)) / 2)
-    end
-    score.totalLength = score.totalLength + length
+  for _, route in ipairs(layout.routes or {}) do
+    routes[#routes + 1] = route
   end
-  return score
+  local scale = layout.scale or 1
+  local nativeOkay, nativeReason =
+    PipeManagerValidateNetwork(routes, { scale = scale, nativeArt = scale < 0.999 })
+  if not nativeOkay then
+    return false, "native_art: " .. tostring(nativeReason)
+  end
+  local painted, clear, reason =
+    pcall(PromotionRenderedCardClear, layout, geometry.buttonW, geometry.buttonH, 160)
+  if not painted then
+    return false, "rendered_card_clear: " .. tostring(clear)
+  end
+  if clear ~= true then
+    return false, "rendered_card_clear: " .. tostring(reason)
+  end
+  return true
 end
 
--- Verify the finished geometry independently of the solver's own scores.
-function PromotionCheckLayout(graph, layout, geometry)
-  PromotionPrepareUnderpasses(layout, graph, geometry)
-  local checkGeometry = {}
-  for k, v in pairs(geometry) do
-    checkGeometry[k] = v
-  end
-  checkGeometry.defaultW = geometry.defaultW or geometry.viewportW
-  checkGeometry.defaultH = geometry.defaultH or geometry.viewportH
-  layout.solverViolations = layout.solverViolations or layout.violations or {}
-  layout.violations = {}
-  for _, issue in ipairs(layout.solverViolations) do
-    layout.violations[#layout.violations + 1] = issue
-  end
-  local accepted, issues = PromotionLayoutAccept(graph, layout, checkGeometry)
-  layout.acceptanceIssues = issues
-  for _, issue in ipairs(issues) do
-    layout.violations[#layout.violations + 1] = issue.code .. ": " .. issue.detail
-  end
-  if accepted and PipeManagerValidateNetwork then
-    local routes = {}
-    for _, route in ipairs(layout.sourceRoutes or {}) do
-      routes[#routes + 1] = route
-    end
-    for _, route in ipairs(layout.routes or {}) do
-      routes[#routes + 1] = route
-    end
-    local nativeOkay, nativeReason =
-      PipeManagerValidateNetwork(routes, { scale = layout.scale, nativeArt = layout.scale < 0.999 })
-    if not nativeOkay then
-      local originalOverrides = {}
-      for key, value in pairs(layout.underpassOverrides or {}) do
-        originalOverrides[key] = value
-      end
-      local orientation = {}
-      local sites = {}
-      for key, value in pairs(layout.underpassOrientation or {}) do
-        orientation[key] = value
-        sites[#sites + 1] = key
-      end
-      table.sort(sites)
-      for i = 1, math.min(#sites, 24) do
-        local overrides = {}
-        for key, value in pairs(originalOverrides) do
-          overrides[key] = value
-        end
-        overrides[sites[i]] = not orientation[sites[i]]
-        layout.underpassOverrides = overrides
-        PromotionPrepareUnderpasses(layout, graph, geometry)
-        local geometryOkay, trialIssues = PromotionLayoutAccept(graph, layout, checkGeometry)
-        if geometryOkay then
-          local pipeOkay = PipeManagerValidateNetwork(
-            routes,
-            { scale = layout.scale, nativeArt = layout.scale < 0.999 }
-          )
-          if pipeOkay then
-            nativeOkay = true
-            layout.acceptanceIssues = trialIssues
-            break
-          end
-        end
-      end
-      if not nativeOkay then
-        layout.underpassOverrides = originalOverrides
-        PromotionPrepareUnderpasses(layout, graph, geometry)
-      end
-    end
-    if not nativeOkay then
-      layout.violations[#layout.violations + 1] = "native_art: " .. tostring(nativeReason)
-    end
-  end
-  layout.valid = accepted and #layout.violations == 0
-  if accepted then
-    layout.readability = PromotionRouteReadability(layout)
-  end
-  return layout.valid
-end
--- All candidates face the same independent acceptance gate. For a proved
--- nonplanar graph, fewer crossings outrank area, as agreed in the design review.
-function PromotionLayoutBetter(candidate, current)
-  if not current then
-    return true
-  end
-  if candidate.crossings ~= current.crossings then
-    return (candidate.crossings or 0) < (current.crossings or 0)
-  end
-  local candidateArea, currentArea =
-    candidate.width * candidate.height, current.width * current.height
-  if math.abs(candidateArea - currentArea) > 0.01 then
-    return candidateArea < currentArea
-  end
-  local a, b =
-    candidate.readability or PromotionRouteReadability(candidate),
-    current.readability or PromotionRouteReadability(current)
-  for _, key in ipairs({
-    "backtrackingRoutes",
-    "axisReversals",
-    "backtrackingPixels",
-    "bends",
-    "totalLength",
-  }) do
-    if math.abs(a[key] - b[key]) > 0.001 then
-      return a[key] < b[key]
-    end
-  end
-  return false
-end
-local function cloneTable(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local out = {}
-  for key, item in pairs(value) do
-    out[key] = cloneTable(item)
-  end
-  return out
-end
-
--- A single incoming edge should meet the centre of a card's left/right side
--- when the surrounding geometry permits it. Keep the original port whenever
--- the centred alternative fails the same independent artwork checks.
-local function centerUnoccupiedPorts(graph, layout, geometry)
-  if not layout or not layout.valid then
-    return layout
-  end
-  local current = layout
-  local cards = {}
-  for _, card in ipairs(layout.buttons or {}) do
-    cards[card.type] = card
-  end
-  for index, route in ipairs(layout.routes or {}) do
-    local card = cards[route.child]
-    local node = graph.nodes[route.child]
-    local points = route.points or {}
-    if card and node and #(node.parents or {}) == 1 and #points >= 3 then
-      local last, prior = points[#points], points[#points - 1]
-      local horizontal = prior.y == last.y and prior.x ~= last.x
-      local side = last.x == card.x or last.x == card.x + geometry.buttonW
-      local center = math.floor(card.y + geometry.buttonH / 2 + 0.5)
-      if horizontal and side and math.abs(last.y - center) >= 3 then
-        local trial = cloneTable(current)
-        local altered = trial.routes[index].points
-        altered[#altered].y = center
-        altered[#altered - 1].y = center
-        if
-          PromotionCheckLayout(graph, trial, geometry)
-          and (
-            type(PromotionRenderedCardClear) ~= "function"
-            or PromotionRenderedCardClear(trial, geometry.buttonW, geometry.buttonH, 160)
-          )
-        then
-          current = trial
-        end
-      end
-    end
-  end
-  return current
-end
--- A bounded geometry nudge can clear a close pair of otherwise complete
--- routes without changing card placement, graph identity or canvas size.
-local function repairRouteClearance(graph, layout, geometry)
-  if
-    not layout
-    or layout.valid
-    or not layout.stats
-    or layout.stats.edges ~= layout.stats.routed
-    or #(layout.solverViolations or {}) > 0
-  then
-    return layout
-  end
-  local current = layout
-  for _ = 1, 2 do
-    local implicated = {}
-    for _, issue in ipairs(current.acceptanceIssues or {}) do
-      if
-        issue.code == "near_pipe"
-        or issue.code == "corner_pipe_art"
-        or issue.code == "false_junction"
-        or issue.code == "pipe_card_art"
-      then
-        for index, route in ipairs(current.routes or {}) do
-          local label = route.parent .. " -> " .. route.child
-          if issue.detail:find(label, 1, true) then
-            implicated[index] = true
-          end
-        end
-      end
-    end
-    for _, issue in ipairs(current.violations or {}) do
-      local axis, fixed, low, high = issue:match(
-        "native_art: network segment too short for native junction art at ([HV]) ([%d%.%-]+):([%d%.%-]+)%.%.([%d%.%-]+)"
-      )
-      fixed, low, high = tonumber(fixed), tonumber(low), tonumber(high)
-      if axis and fixed and low and high then
-        for index, route in ipairs(current.routes or {}) do
-          for k = 1, #route.points - 1 do
-            local a, b = route.points[k], route.points[k + 1]
-            if
-              (
-                axis == "V"
-                and a.x == b.x
-                and a.x == fixed
-                and math.max(a.y, b.y) >= low
-                and math.min(a.y, b.y) <= high
-              )
-              or (
-                axis == "H"
-                and a.y == b.y
-                and a.y == fixed
-                and math.max(a.x, b.x) >= low
-                and math.min(a.x, b.x) <= high
-              )
-            then
-              implicated[index] = true
-            end
-          end
-        end
-      end
-    end
-    local indices = {}
-    for index in pairs(implicated) do
-      indices[#indices + 1] = index
-    end
-    table.sort(indices)
-    local improved = nil
-    local tried = 0
-    local buttonOf = {}
-    for _, button in ipairs(current.buttons or {}) do
-      buttonOf[button.type] = button
-    end
-    for _, index in ipairs(indices) do
-      local route = current.routes[index]
-      for _, which in ipairs({ "source", "target" }) do
-        local points = route.points
-        local first, last, card
-        if which == "source" then
-          first, last, card = 1, 2, buttonOf[route.parent]
-        else
-          first, last, card = #points - 1, #points, buttonOf[route.child]
-        end
-        if card then
-          local horizontal = points[first].y == points[last].y
-          local vertical = points[first].x == points[last].x
-          for _, delta in ipairs({ -16, 16, -8, 8 }) do
-            if tried >= (geometry.maxRepairTrials or 32) then
-              break
-            end
-            local candidate = horizontal and points[first].y + delta
-              or vertical and points[first].x + delta
-            local low = horizontal and card.y + 8 or card.x + 8
-            local high = horizontal and card.y + geometry.buttonH - 8
-              or card.x + geometry.buttonW - 8
-            if candidate and candidate >= low and candidate <= high then
-              tried = tried + 1
-              local variant = cloneTable(current)
-              local altered = variant.routes[index].points
-              if horizontal then
-                altered[first].y = candidate
-                altered[last].y = candidate
-              else
-                altered[first].x = candidate
-                altered[last].x = candidate
-              end
-              if PromotionCheckLayout(graph, variant, geometry) then
-                return variant
-              end
-              if
-                #variant.violations < #current.violations
-                and (not improved or #variant.violations < #improved.violations)
-              then
-                improved = variant
-              end
-            end
-          end
-        end
-      end
-      for segment = 2, #route.points - 2 do
-        local a, b = route.points[segment], route.points[segment + 1]
-        for _, delta in ipairs({ -8, 8, -16, 16, -24, 24, -32, 32 }) do
-          if tried >= (geometry.maxRepairTrials or 32) then
-            break
-          end
-          tried = tried + 1
-          local variant = cloneTable(current)
-          local points = variant.routes[index].points
-          if a.x == b.x then
-            points[segment].x = points[segment].x + delta
-            points[segment + 1].x = points[segment + 1].x + delta
-          elseif a.y == b.y then
-            points[segment].y = points[segment].y + delta
-            points[segment + 1].y = points[segment + 1].y + delta
-          end
-          local okay = PromotionCheckLayout(graph, variant, geometry)
-          if okay then
-            return variant
-          end
-          if
-            #variant.violations < #current.violations
-            and (not improved or #variant.violations < #improved.violations)
-          then
-            improved = variant
-          end
-        end
-      end
-      local parent, child = buttonOf[route.parent], buttonOf[route.child]
-      if parent and child and parent.x + geometry.buttonW + 48 <= child.x then
-        local sx, sy =
-          parent.x + geometry.buttonW, math.floor(parent.y + geometry.buttonH / 2 + 0.5)
-        local tx, ty = child.x, math.floor(child.y + geometry.buttonH / 2 + 0.5)
-        local gap = tx - sx
-        for _, fraction in ipairs({ 0.5, 0.33, 0.67 }) do
-          local lane = math.floor(sx + gap * fraction + 0.5)
-          local variant = cloneTable(current)
-          variant.routes[index].points = {
-            { x = sx, y = sy },
-            { x = lane, y = sy },
-            { x = lane, y = ty },
-            { x = tx, y = ty },
-          }
-          if PromotionCheckLayout(graph, variant, geometry) then
-            return variant
-          end
-        end
-      end
-    end
-    if not improved then
-      break
-    end
-    current = improved
-  end
-  -- Move a shared first trunk as one object. Nudging only one member would
-  -- split a legitimate common source and create a false junction.
-  local groups = {}
-  for index, route in ipairs(current.routes or {}) do
-    local p = route.points or {}
-    if #p >= 4 and p[2].x == p[3].x then
-      local key = route.parent .. "|" .. p[1].x .. "|" .. p[1].y .. "|" .. p[2].x
-      local group = groups[key] or {}
-      group[#group + 1] = index
-      groups[key] = group
-    end
-  end
-  local keys = {}
-  for key, group in pairs(groups) do
-    if #group >= 2 then
-      keys[#keys + 1] = key
-    end
-  end
-  table.sort(keys)
-  for _, key in ipairs(keys) do
-    for _, delta in ipairs({ -8, 8, -16, 16, -24, 24, -32, 32 }) do
-      local variant = cloneTable(current)
-      for _, index in ipairs(groups[key]) do
-        local points = variant.routes[index].points
-        points[2].x = points[2].x + delta
-        points[3].x = points[3].x + delta
-      end
-      if PromotionCheckLayout(graph, variant, geometry) then
-        return variant
-      end
-      if #variant.violations < #current.violations then
-        current = variant
-      end
-    end
-  end
-  return current
-end
+-- A reviewed layout (hand-approved geometry for one exact graph) when one
+-- matches and still draws cleanly; otherwise the channel layout, which takes
+-- stored rows and routings for known graphs and searches the rest.
 function PromotionLayoutChoose(graph, geometry)
-  -- Reviewed layouts are executable geometry, not preview-only images.
-  -- Their graph signature must match, and they face the same independent
-  -- geometry/native-art gate before any live controls are drawn.
   if type(PromotionReviewedLayout) == "function" then
     local built, reviewed, reviewGeometry, reviewName =
       pcall(PromotionReviewedLayout, graph, geometry)
     if built and reviewed then
-      local checked, accepted = pcall(PromotionCheckLayout, graph, reviewed, reviewGeometry)
-      if checked and accepted and type(PromotionRenderedCardClear) == "function" then
-        local painted, clear =
-          pcall(PromotionRenderedCardClear, reviewed, geometry.buttonW, geometry.buttonH, 160)
-        accepted = painted and clear == true
-      end
-      if checked and accepted then
+      PromotionPrepareUnderpasses(reviewed, graph, reviewGeometry)
+      local okay, reason = drawable(reviewed, geometry)
+      if okay then
         reviewed.method = "reviewed"
         reviewed.reviewName = reviewName
+        reviewed.valid = true
+        reviewed.violations = {}
         return reviewed
       end
-      print("Promotion Tree reviewed layout rejected: " .. tostring(reviewName))
-      for _, issue in ipairs(reviewed.violations or {}) do
-        print("Promotion Tree: " .. tostring(issue))
-      end
+      print("Promotion Tree reviewed layout rejected: " .. tostring(reviewName) .. ": " .. tostring(reason))
     end
   end
-  local builders = {}
-  local function add(name, solve)
-    if type(solve) == "function" then
-      builders[#builders + 1] = { name = name, solve = solve }
-    end
+  local solved, layout = pcall(PromotionTreeLayoutSolve, graph, geometry)
+  if not solved then
+    return {
+      buttons = {},
+      routes = {},
+      sourceRoutes = {},
+      valid = false,
+      violations = { "layout failed: " .. tostring(layout) },
+    }
   end
-  if #(graph.roots or {}) >= 6 and #graph.roots * 2 > #graph.order then
-    add("sparse", PromotionLayoutSolveSparse)
-  end
-  local genericFirst = #graph.order <= 18
-  if genericFirst then
-    add("layered", PromotionLayoutSolve)
-  end
-  if geometry.provenNonplanar then
-    add("planarized", PromotionLayoutSolveNonplanar)
-  else
-    add("planar", PromotionLayoutSolvePlanar)
-  end
-  if not genericFirst then
-    add("layered", PromotionLayoutSolve)
-  end
-  local function evaluate(candidate)
-    local checked, accepted = pcall(PromotionCheckLayout, graph, candidate, geometry)
-    if checked and not accepted then
-      local repaired, variant = pcall(repairRouteClearance, graph, candidate, geometry)
-      if repaired and variant then
-        candidate = variant
-        accepted = variant.valid
-      end
-    end
-    local rendered = true
-    if checked and accepted and type(PromotionRenderedCardClear) == "function" then
-      local ok, clear =
-        pcall(PromotionRenderedCardClear, candidate, geometry.buttonW, geometry.buttonH, 160)
-      rendered = ok and clear == true
-      if not rendered then
-        accepted = false
-      end
-    end
-    return candidate, checked, accepted, rendered
-  end
-  local best, failed
-  for _, builder in ipairs(builders) do
-    local ok, candidate, reason = pcall(builder.solve, graph, geometry)
-    if ok and candidate then
-      candidate.method = builder.name
-      local alternate = candidate.alternate
-      candidate.alternate = nil
-      local checked, accepted, rendered
-      candidate, checked, accepted, rendered = evaluate(candidate)
-      if alternate then
-        -- A rejected solver result may carry a free-entry routing of the
-        -- same tree that the clearance repair can also rescue. Repair both
-        -- and keep the better drawing.
-        alternate.method = builder.name
-        local other, otherChecked, otherAccepted, otherRendered = evaluate(alternate)
-        if
-          otherChecked
-          and otherAccepted
-          and (not (checked and accepted) or PromotionLayoutBetter(other, candidate))
-        then
-          candidate, checked, accepted, rendered = other, otherChecked, otherAccepted, otherRendered
-        end
-      end
-      if checked and accepted then
-        if PromotionLayoutBetter(candidate, best) then
-          best = candidate
-        end
-        local lowerBound = geometry.provenNonplanar and 1 or 0
-        if
-          best.crossings == lowerBound
-          and best.width * best.height <= geometry.viewportW * geometry.viewportH + 0.01
-          and (best.readability or PromotionRouteReadability(best)).backtrackingRoutes == 0
-        then
-          return best
-        end
-      elseif not checked then
-        candidate = {
-          buttons = {},
-          routes = {},
-          sourceRoutes = {},
-          valid = false,
-          violations = { builder.name .. " validation failed: " .. tostring(accepted) },
-        }
-      elseif not rendered then
-        candidate.valid = false
-        candidate.violations = candidate.violations or {}
-        candidate.violations[#candidate.violations + 1] =
-          "rendered_card_clear: candidate failed fixed-card/native clearance"
-      end
-      if
-        not candidate.valid and (not failed or #(candidate.routes or {}) > #(failed.routes or {}))
-      then
-        failed = candidate
-      end
-    elseif not failed then
-      failed = {
-        buttons = {},
-        routes = {},
-        sourceRoutes = {},
-        valid = false,
-        violations = { builder.name .. " layout failed: " .. tostring(ok and reason or candidate) },
-      }
-    end
-  end
-  -- Try the expensive rank/degrees fallback only after ordinary builders fail.
-  -- Its warm-start rows come from the best partial candidate, and its bounded
-  -- reflow/rip-up still passes the same semantic, native and painted-card gates.
-  if
-    (not best or not best.valid)
-    and type(PromotionDenseLayoutEligible) == "function"
-    and type(PromotionDenseLayoutSolve) == "function"
-  then
-    local eligibleOk, eligible = pcall(PromotionDenseLayoutEligible, graph)
-    if eligibleOk and eligible then
-      local ok, candidate, reason =
-        pcall(PromotionDenseLayoutSolve, graph, geometry, failed or best)
-      if ok and candidate then
-        candidate.method = "dense-degree-spill"
-        local checked, accepted = pcall(PromotionCheckLayout, graph, candidate, geometry)
-        if checked and not accepted then
-          local repaired, variant = pcall(repairRouteClearance, graph, candidate, geometry)
-          if repaired and variant then
-            candidate = variant
-            accepted = variant.valid
-          end
-        end
-        local rendered = true
-        if checked and accepted and type(PromotionRenderedCardClear) == "function" then
-          local paintOk, clear =
-            pcall(PromotionRenderedCardClear, candidate, geometry.buttonW, geometry.buttonH, 160)
-          rendered = paintOk and clear == true
-          if not rendered then
-            accepted = false
-          end
-        end
-        if checked and accepted and rendered then
-          return candidate
-        end
-        if not checked then
-          candidate = {
-            buttons = {},
-            routes = {},
-            sourceRoutes = {},
-            valid = false,
-            violations = { "dense validation failed: " .. tostring(accepted) },
-          }
-        else
-          candidate.valid = false
-          candidate.violations = candidate.violations or {}
-          if not rendered then
-            candidate.violations[#candidate.violations + 1] =
-              "rendered_card_clear: dense candidate failed fixed-card/native clearance"
-          end
-          if not ok then
-            candidate.violations[#candidate.violations + 1] = "dense fallback failed: "
-              .. tostring(reason)
-          end
-        end
-        if not failed or #(candidate.routes or {}) > #(failed.routes or {}) then
-          failed = candidate
-        end
-      end
-    end
-  end
-  return best or failed
+  return layout
 end
 function PromotionLayoutCached(graph, geometry)
   local key = PromotionLayoutKey(graph, geometry)
@@ -1084,30 +507,7 @@ function PromotionLayoutCached(graph, geometry)
     cacheHitCount = cacheHitCount + 1
     return cache[key].layout, true
   end
-  local solveGeometry = {}
-  for k, v in pairs(geometry) do
-    solveGeometry[k] = v
-  end
-  solveGeometry.defaultW = geometry.defaultW or geometry.viewportW
-  solveGeometry.defaultH = geometry.defaultH or geometry.viewportH
-  solveGeometry.provenNonplanar = PromotionNonplanarCertificate(graph) ~= nil
-  -- A bounded readability allowance is a graph-wide policy, set before any
-  -- candidate is seen. The chooser still minimizes crossings before area.
-  local edges = 0
-  for _, name in ipairs(graph.order) do
-    edges = edges + #(graph.nodes[name].parents or {})
-  end
-  if solveGeometry.readabilityCrossingBudget == nil then
-    solveGeometry.readabilityCrossingBudget = 2 * edges
-  end
-  solveGeometry.allowReadabilityCrossings = solveGeometry.readabilityCrossingBudget > 0
-  local layout = PromotionLayoutChoose(graph, solveGeometry)
-  if not layout then
-    return nil, false
-  end
-  if layout.valid and layout.method ~= "reviewed" then
-    layout = centerUnoccupiedPorts(graph, layout, solveGeometry)
-  end
+  local layout = PromotionLayoutChoose(graph, geometry)
   layoutSolveCount = layoutSolveCount + 1
   local size, oldestKey, oldestAccessOrder = 0, nil, math.huge
   for k, entry in pairs(cache) do

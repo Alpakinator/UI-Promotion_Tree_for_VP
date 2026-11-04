@@ -157,6 +157,30 @@ local PROMOTION_FIELDS = {
 
 local promotionRows
 local linkedRows
+-- Columns differ between DLL versions, and reading a missing one from a
+-- GameInfo row logs "Cannot find key". Read only the columns rows have.
+local presentFields
+local function fieldsOf(row)
+  if not presentFields then
+    local columns = {}
+    local listed = type(row) == "table"
+      and pcall(function()
+        for key in pairs(row) do
+          columns[key] = true
+        end
+      end)
+    if not listed or not columns.Type then
+      return PROMOTION_FIELDS
+    end
+    presentFields = {}
+    for i = 1, #PROMOTION_FIELDS do
+      if columns[PROMOTION_FIELDS[i]] then
+        presentFields[#presentFields + 1] = PROMOTION_FIELDS[i]
+      end
+    end
+  end
+  return presentFields
+end
 local function copyPromotion(row)
   if not row then
     return nil
@@ -168,8 +192,9 @@ local function copyPromotion(row)
     numericFields = {},
     enabledFields = {},
   }
-  for i = 1, #PROMOTION_FIELDS do
-    local field = PROMOTION_FIELDS[i]
+  local fields = fieldsOf(row)
+  for i = 1, #fields do
+    local field = fields[i]
     local value = row[field]
     copy[field] = value
     local amount = tonumber(value)
