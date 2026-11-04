@@ -2,7 +2,8 @@
 # always has the same name, so this link serves the newest version:
 # https://github.com/Alpakinator/UI-Promotion_Tree_for_VP/releases/latest/download/UI-Promotion-Tree-for-VP.zip
 # Inside is the mod folder with its version, ready to drop into MODS. The
-# annotated tag's message becomes the release notes.
+# annotated tag's message becomes the release notes; tag with
+# `git tag -a --cleanup=verbatim`, or git drops Markdown headings as comments.
 
 name: release
 
