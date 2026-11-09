@@ -65,21 +65,6 @@ function PromotionLayoutKey(graph, geometry)
   return table.concat(out, "|")
 end
 
-local function between(v, a, b)
-  return v > math.min(a, b) + 0.01 and v < math.max(a, b) - 0.01
-end
-local function cross(a, b, c, d)
-  if a.y == b.y and c.x == d.x and between(c.x, a.x, b.x) and between(a.y, c.y, d.y) then
-    return c.x, a.y
-  end
-  if a.x == b.x and c.y == d.y and between(a.x, c.x, d.x) and between(c.y, a.y, b.y) then
-    return a.x, c.y
-  end
-end
-local function distance(a, b)
-  return math.abs(a.x - b.x) + math.abs(a.y - b.y)
-end
-
 -- The logical tree may be fitted, but its painted cards have a fixed width.
 -- Centering each card on its logical rectangle preserves top/bottom ports;
 -- only left/right endpoints and the body-height top/bottom contacts move.
@@ -188,85 +173,13 @@ function PromotionPaintedRoutes(layout, buttonW, buttonH, cardW)
   return routes, cards
 end
 
--- Reject routes hidden behind another painted card and native-art junctions
--- invalidated by the last few pixels of port adjustment.
-function PromotionRenderedCardClear(layout, buttonW, buttonH, cardW)
-  cardW = cardW or 160
-  local audited = type(layout) == "table" and layout.paintedAudit
-  if
-    audited
-    and audited.buttonW == buttonW
-    and audited.buttonH == buttonH
-    and audited.cardW == cardW
-  then
-    return audited.ok, audited.reason
-  end
-  local routes, cards, reason = PromotionPaintedRoutes(layout, buttonW, buttonH, cardW)
-  if not routes then
-    return false, reason
-  end
-  local function finish(ok, detail)
-    layout.paintedAudit =
-      { buttonW = buttonW, buttonH = buttonH, cardW = cardW, ok = ok, reason = detail }
-    if ok then
-      layout.paintedRoutes = routes
-      layout.paintedCards = cards
-    end
-    return ok, detail
-  end
-  local scale = layout.scale or 1
-  for _, card in ipairs(cards) do
-    if
-      card.x < 0
-      or card.y < 0
-      or (layout.width and card.right > layout.width * scale + 0.01)
-      or (layout.height and card.bottom > layout.height * scale + 0.01)
-    then
-      return finish(false, "painted card exceeds fixed canvas: " .. card.type)
-    end
-  end
-  if type(PipeManagerValidateNetwork) == "function" then
-    local okay, nativeReason =
-      PipeManagerValidateNetwork(routes, { scale = scale, nativeArt = scale < 0.999 })
-    if not okay then
-      return finish(false, "painted pipe: " .. tostring(nativeReason))
-    end
-  end
-  local pad = 4
-  for _, route in ipairs(routes) do
-    for segment = 1, #(route.points or {}) - 1 do
-      local a, b = route.points[segment], route.points[segment + 1]
-      local ax, ay, bx, by = a.x * scale, a.y * scale, b.x * scale, b.y * scale
-      for _, card in ipairs(cards) do
-        if
-          not (card.type == route.parent and segment == 1)
-          and not (card.type == route.child and segment == #route.points - 1)
-        then
-          local touches = false
-          if ay == by then
-            touches = ay > card.y - pad
-              and ay < card.bottom + pad
-              and math.max(ax, bx) > card.x - pad
-              and math.min(ax, bx) < card.right + pad
-          elseif ax == bx then
-            touches = ax > card.x - pad
-              and ax < card.right + pad
-              and math.max(ay, by) > card.y - pad
-              and math.min(ay, by) < card.bottom + pad
-          end
-          if touches then
-            return finish(false, route.parent .. " -> " .. route.child .. " near " .. card.type)
-          end
-        end
-      end
-    end
-  end
-  return finish(true)
-end
+-- Screen pixels kept between a root row and the unit box's pipe where both
+-- meet the root spine, so their native junction tiles do not overlap.
+local SOURCE_JUNCTION_ROOM = 44
 
 -- Center the *rendered* diagram inside the visible tree panel. The solver's
 -- coordinates and all relative card/pipe positions stay untouched, including
--- the cached and reviewed layouts. A little clearance covers the native pipe
+-- cached layouts. A little clearance covers the native pipe
 -- artwork around its centerline, so a tall tree remains within the viewport.
 function PromotionTreeVerticalOffset(
   layout,
@@ -321,180 +234,196 @@ function PromotionTreeVerticalOffset(
   if bottom - top + 2 * clearance >= viewportH then
     return 0
   end
-  -- Translate the whole tree, without changing its internal layout, when its
-  -- source can meet the sidebar centre while all painted bounds still fit.
+  local fitLo, fitHi = clearance - top, viewportH - clearance - bottom
+  local desired = math.max(fitLo, math.min(math.floor((viewportH - top - bottom) / 2 + 0.5), fitHi))
+  -- The unit box's pipe enters the root spine (the vertical source pipe at
+  -- the roots' left). Centre the tree as far as that pipe still meets the
+  -- spine head-on, so it never needs a bend: on a root row, or between two
+  -- roots with room for the native junction art clear of the root rows.
   if sourceTargetY and layout.source then
-    local aligned = sourceTargetY - layout.source.y * scale
-    if aligned >= clearance - top and aligned <= viewportH - clearance - bottom then
-      return aligned
-    end
-  end
-  local desired = math.floor((viewportH - top - bottom) / 2 + 0.5)
-  return math.max(clearance - top, math.min(desired, viewportH - clearance - bottom))
-end
-
-function PromotionPrepareUnderpasses(layout, graph, geometry)
-  layout.underpasses = {}
-  layout.underpassOrientation = {}
-  local routes = {}
-  for _, r in ipairs(layout.routes or {}) do
-    routes[#routes + 1] = r
-  end
-  for _, r in ipairs(layout.sourceRoutes or {}) do
-    routes[#routes + 1] = r
-  end
-  for _, r in ipairs(routes) do
-    r.gaps = {}
-  end
-  local crossings = 0
-  -- Bring each underpass run two rendered pixels closer to the overpass.
-  -- Gaps are stored in logical coordinates, while the requested clearance
-  -- change is in screen pixels and must survive uniformly fitted layouts.
-  local halfGap = (geometry.underpassHalfGap or 10) - 2 / (layout.scale or 1)
-  local underAtPoint = {}
-  local function endpointClearance(horizontal, x, y)
-    local nearest = math.huge
-    for _, route in ipairs(routes) do
-      for k = 1, #route.points - 1 do
-        local a, b = route.points[k], route.points[k + 1]
-        if
-          (horizontal and a.y == b.y and a.y == y)
-          or (not horizontal and a.x == b.x and a.x == x)
-        then
-          nearest = math.min(
-            nearest,
-            horizontal and math.min(math.abs(x - a.x), math.abs(x - b.x))
-              or math.min(math.abs(y - a.y), math.abs(y - b.y))
-          )
+    local sourceX, rows = layout.source.x, {}
+    local spineTop, spineBottom = layout.source.y * scale, layout.source.y * scale
+    for _, route in ipairs(layout.sourceRoutes or {}) do
+      local points = route.points or {}
+      local last = points[#points]
+      if last then
+        rows[#rows + 1] = last.y * scale
+      end
+      for _, point in ipairs(points) do
+        if point.x == sourceX then
+          spineTop = math.min(spineTop, point.y * scale)
+          spineBottom = math.max(spineBottom, point.y * scale)
         end
       end
     end
-    return nearest
-  end
-  for i = 1, #routes do
-    for j = i + 1, #routes do
-      local r, s = routes[i], routes[j]
-      for ri = 1, #r.points - 1 do
-        for si = 1, #s.points - 1 do
-          local a, b, c, d = r.points[ri], r.points[ri + 1], s.points[si], s.points[si + 1]
-          local x, y = cross(a, b, c, d)
-          if x then
-            crossings = crossings + 1
-            if
-              type(geometry.readabilityCrossingBudget) == "number"
-              and geometry.readabilityCrossingBudget > 0
-            then
-              local under, over, index, first, last = r, s, ri, a, b
-              local horizontalRoute, horizontalIndex, hFirst, hLast
-              local verticalRoute, verticalIndex, vFirst, vLast
-              if a.y == b.y then
-                horizontalRoute, horizontalIndex, hFirst, hLast = r, ri, a, b
-                verticalRoute, verticalIndex, vFirst, vLast = s, si, c, d
-              else
-                horizontalRoute, horizontalIndex, hFirst, hLast = s, si, c, d
-                verticalRoute, verticalIndex, vFirst, vLast = r, ri, a, b
-              end
-              local pointKey = x .. "|" .. y
-              local horizontalUnder = underAtPoint[pointKey]
-              if horizontalUnder == nil then
-                horizontalUnder = layout.underpassOverrides and layout.underpassOverrides[pointKey]
-                if horizontalUnder == nil then
-                  horizontalUnder = endpointClearance(true, x, y) > endpointClearance(false, x, y)
-                end
-                underAtPoint[pointKey] = horizontalUnder
-                layout.underpassOrientation[pointKey] = horizontalUnder
-              end
-              if horizontalUnder then
-                under, over, index, first, last =
-                  horizontalRoute, verticalRoute, horizontalIndex, hFirst, hLast
-              else
-                under, over, index, first, last =
-                  verticalRoute, horizontalRoute, verticalIndex, vFirst, vLast
-              end
-              local at = distance(first, { x = x, y = y })
-              local length = distance(first, last)
-              local from, to = math.max(0, at - halfGap), math.min(length, at + halfGap)
-              -- Several logical edges may share one visible overpass. Keep
-              -- every crossing record, but cut its physical gap only once.
-              local alreadyCut = false
-              for _, gap in ipairs(under.gaps) do
-                if gap.segment == index and gap.from == from and gap.to == to then
-                  alreadyCut = true
-                  break
-                end
-              end
-              if not alreadyCut then
-                under.gaps[#under.gaps + 1] = { segment = index, from = from, to = to }
-              end
-              layout.underpasses[#layout.underpasses + 1] = {
-                x = x,
-                y = y,
-                under = { parent = under.parent, child = under.child },
-                over = { parent = over.parent, child = over.child },
-              }
-            end
-          end
+    local function allowed(offset)
+      if offset < fitLo or offset > fitHi then
+        return false
+      end
+      local y = sourceTargetY - offset
+      if y < spineTop - 0.5 or y > spineBottom + 0.5 then
+        return false
+      end
+      for _, row in ipairs(rows) do
+        local d = math.abs(y - row)
+        if d > 1 and d < SOURCE_JUNCTION_ROOM then
+          return false
         end
+      end
+      return true
+    end
+    local candidates = {
+      math.max(sourceTargetY - spineBottom, math.min(desired, sourceTargetY - spineTop)),
+    }
+    for _, row in ipairs(rows) do
+      for _, shift in ipairs({ 0, -SOURCE_JUNCTION_ROOM, SOURCE_JUNCTION_ROOM }) do
+        candidates[#candidates + 1] = sourceTargetY - row + shift
+      end
+    end
+    local best
+    for _, offset in ipairs(candidates) do
+      offset = math.floor(offset + 0.5)
+      if allowed(offset) and (not best or math.abs(offset - desired) < math.abs(best - desired)) then
+        best = offset
+      end
+    end
+    if best then
+      return best
+    end
+  end
+  return desired
+end
+
+-- Emergency layout, used only if the live search raises an error: columns by
+-- prerequisite depth, rows in name order, every pipe an elbow on its own
+-- track. Plain, but every promotion and link is shown.
+local EMERGENCY_MIN_SCALE = 0.8165 -- as PromotionTreeLayout's MIN_SCALE
+function PromotionEmergencyLayout(graph, geometry, reason)
+  local bw, bh = geometry.buttonW, geometry.buttonH
+  local depth = {}
+  local function depthOf(t, seen)
+    if depth[t] then
+      return depth[t]
+    end
+    seen = seen or {}
+    if seen[t] then
+      return 0
+    end
+    seen[t] = true
+    local d = 0
+    for _, p in ipairs(graph.nodes[t] and graph.nodes[t].parents or {}) do
+      d = math.max(d, depthOf(p, seen) + 1)
+    end
+    depth[t] = d
+    return d
+  end
+  local margin, rowGap, trackGap = 24, 22, 10
+  -- The screen scrolls sideways but not vertically: a depth with more cards
+  -- than fit in height at the smallest scale continues in further columns.
+  local vhFit = geometry.viewportH or 1000
+  local maxRows = math.max(1, math.floor((vhFit / EMERGENCY_MIN_SCALE - 2 * margin + rowGap) / (bh + rowGap)))
+  local byDepth, depthsUsed = {}, 0
+  for _, t in ipairs(graph.order) do
+    local d = depthOf(t)
+    byDepth[d] = byDepth[d] or {}
+    table.insert(byDepth[d], t)
+    depthsUsed = math.max(depthsUsed, d + 1)
+  end
+  local columns, columnsUsed, columnOf = {}, 0, {}
+  for d = 0, depthsUsed - 1 do
+    for i, t in ipairs(byDepth[d] or {}) do
+      local c = columnsUsed + math.floor((i - 1) / maxRows)
+      columns[c] = columns[c] or {}
+      table.insert(columns[c], t)
+      columnOf[t] = c
+    end
+    columnsUsed = columnsUsed + math.max(1, math.ceil(#(byDepth[d] or {}) / maxRows))
+  end
+  local links = {}
+  for c = 0, columnsUsed - 1 do
+    links[c] = 0
+  end
+  for _, t in ipairs(graph.order) do
+    local c = columnOf[t]
+    links[c] = links[c] + #(graph.nodes[t].children or {})
+  end
+  local x, columnX, channelStart = margin + 40, {}, {}
+  for c = 0, columnsUsed - 1 do
+    columnX[c] = x
+    channelStart[c] = x + bw + 16
+    x = channelStart[c] + math.max(40, (links[c] + 1) * trackGap) + 16
+  end
+  local width = x - 16 + margin
+  local buttons, pos, rowsUsed = {}, {}, 0
+  for c = 0, columnsUsed - 1 do
+    for r, t in ipairs(columns[c] or {}) do
+      local b = { type = t, x = columnX[c], y = margin + (r - 1) * (bh + rowGap) }
+      buttons[#buttons + 1] = b
+      pos[t] = b
+      rowsUsed = math.max(rowsUsed, r)
+    end
+  end
+  local height = 2 * margin + rowsUsed * (bh + rowGap) - rowGap
+  local routes, track = {}, {}
+  for _, t in ipairs(graph.order) do
+    local a = pos[t]
+    local c = columnOf[t]
+    for _, child in ipairs(graph.nodes[t].children or {}) do
+      local b = pos[child]
+      if a and b then
+        local ay, by = a.y + math.floor(bh / 2), b.y + math.floor(bh / 2)
+        local points
+        if ay == by then
+          points = { { x = a.x + bw, y = ay }, { x = b.x, y = by } }
+        else
+          track[c] = (track[c] or 0) + 1
+          local tx = channelStart[c] + track[c] * trackGap
+          points = { { x = a.x + bw, y = ay }, { x = tx, y = ay }, { x = tx, y = by }, { x = b.x, y = by } }
+        end
+        routes[#routes + 1] = { parent = t, child = child, points = points, gaps = {} }
       end
     end
   end
-  layout.crossings = crossings
-  return layout
-end
--- Native pipe art and painted cards must both fit the finished geometry.
-local function drawable(layout, geometry)
-  local routes = {}
-  for _, route in ipairs(layout.sourceRoutes or {}) do
-    routes[#routes + 1] = route
-  end
-  for _, route in ipairs(layout.routes or {}) do
-    routes[#routes + 1] = route
-  end
-  local scale = layout.scale or 1
-  local nativeOkay, nativeReason =
-    PipeManagerValidateNetwork(routes, { scale = scale, nativeArt = scale < 0.999 })
-  if not nativeOkay then
-    return false, "native_art: " .. tostring(nativeReason)
-  end
-  local painted, clear, reason =
-    pcall(PromotionRenderedCardClear, layout, geometry.buttonW, geometry.buttonH, 160)
-  if not painted then
-    return false, "rendered_card_clear: " .. tostring(clear)
-  end
-  if clear ~= true then
-    return false, "rendered_card_clear: " .. tostring(reason)
-  end
-  return true
+  local vw, vh = geometry.viewportW or width, geometry.viewportH or height
+  local scale = math.min(1, vw / width, vh / height)
+  local overflow = scale < EMERGENCY_MIN_SCALE
+  scale = math.max(EMERGENCY_MIN_SCALE, scale)
+  return {
+    buttons = buttons,
+    routes = routes,
+    sourceRoutes = {},
+    width = math.max(width, vw / scale),
+    height = math.max(height, vh / scale),
+    contentWidth = width,
+    contentHeight = height,
+    scale = scale,
+    overflow = overflow,
+    tooTall = scale * height > vh,
+    crossings = 0,
+    underpasses = {},
+    valid = false,
+    violations = { "layout failed: " .. tostring(reason) },
+    method = "emergency",
+  }
 end
 
--- A reviewed layout (hand-approved geometry for one exact graph) when one
--- matches and still draws cleanly; otherwise the channel layout, which takes
--- stored rows and routings for known graphs and searches the rest.
+-- Every tree is laid out by the live search (PromotionTreeLayoutSolve);
+-- nothing is stored per tree. Should the search ever fail, the emergency
+-- layout still shows the tree.
 function PromotionLayoutChoose(graph, geometry)
-  if type(PromotionReviewedLayout) == "function" then
-    local built, reviewed, reviewGeometry, reviewName =
-      pcall(PromotionReviewedLayout, graph, geometry)
-    if built and reviewed then
-      PromotionPrepareUnderpasses(reviewed, graph, reviewGeometry)
-      local okay, reason = drawable(reviewed, geometry)
-      if okay then
-        reviewed.method = "reviewed"
-        reviewed.reviewName = reviewName
-        reviewed.valid = true
-        reviewed.violations = {}
-        return reviewed
-      end
-      print("Promotion Tree reviewed layout rejected: " .. tostring(reviewName) .. ": " .. tostring(reason))
-    end
-  end
   local solved, layout = pcall(PromotionTreeLayoutSolve, graph, geometry)
-  if not solved then
+  if not solved or type(layout) ~= "table" or not layout.buttons or #layout.buttons == 0 then
+    local reason = solved and "no cards placed" or layout
+    local ok, emergency = pcall(PromotionEmergencyLayout, graph, geometry, reason)
+    if ok then
+      return emergency
+    end
     return {
       buttons = {},
       routes = {},
       sourceRoutes = {},
       valid = false,
-      violations = { "layout failed: " .. tostring(layout) },
+      violations = { "layout failed: " .. tostring(reason), "emergency layout failed: " .. tostring(emergency) },
     }
   end
   return layout
@@ -549,4 +478,72 @@ function PromotionUnitSourceBridge(layout, originX, originY, boxRight, boxCentre
     points[#points + 1] = { x = sx, y = sy }
   end
   return { parent = "__PROMOTION_SOURCE__", child = "__PROMOTION_BOX__", points = points }
+end
+
+-- The box pipe meets the root spine at the box's height. When that height
+-- lies on the spine, the source feeds start there instead of at the layout's
+-- source point, so the box pipe runs straight on into the root level with it
+-- (or meets the spine head-on between roots) and the spine branches up and
+-- down from that point; no feed turns back along the box pipe. Returns the
+-- routes to draw (a copy; the cached ones stay unchanged) with the box pipe.
+function PromotionJoinUnitSource(layout, routes, originX, originY, boxRight, boxCentreY, boxHeight)
+  local bridge = PromotionUnitSourceBridge(layout, originX, originY, boxRight, boxCentreY, boxHeight)
+  local out = {}
+  for i = 1, #routes do
+    out[i] = routes[i]
+  end
+  if not bridge then
+    return out, nil
+  end
+  local sx = layout.source.x
+  local by = bridge.points[1].y
+  local top, bottom = math.huge, -math.huge
+  local feeds = {}
+  for i, route in ipairs(out) do
+    if route.parent == "__PROMOTION_SOURCE__" then
+      if route.gaps and #route.gaps > 0 then
+        out[#out + 1] = bridge
+        return out, bridge
+      end
+      for _, point in ipairs(route.points) do
+        if point.x == sx then
+          top, bottom = math.min(top, point.y), math.max(bottom, point.y)
+        end
+      end
+      feeds[#feeds + 1] = i
+    end
+  end
+  -- Only head-on joins: on a root row, or clear of every root row by the
+  -- room the junction art needs (a tree too tall to move may allow neither).
+  -- A box pipe within two pixels of a root row snaps onto it.
+  local scale = layout.scale or 1
+  for _, i in ipairs(feeds) do
+    local points = out[i].points
+    if math.abs(points[#points].y - by) * scale <= 2 then
+      by = points[#points].y
+    end
+  end
+  local clear = #feeds > 0 and by >= top - 0.01 and by <= bottom + 0.01
+  for _, i in ipairs(feeds) do
+    local points = out[i].points
+    local d = math.abs(points[#points].y - by) * scale
+    if d > 0.01 and d < SOURCE_JUNCTION_ROOM then
+      clear = false
+    end
+  end
+  if clear then
+    for _, i in ipairs(feeds) do
+      local route = out[i]
+      local last = route.points[#route.points]
+      local points = { { x = sx, y = by } }
+      if math.abs(last.y - by) > 0.01 then
+        points[#points + 1] = { x = sx, y = last.y }
+      end
+      points[#points + 1] = { x = last.x, y = last.y }
+      out[i] = { parent = route.parent, child = route.child, dim = route.dim, gaps = {}, points = points }
+    end
+    bridge.points = { { x = bridge.points[1].x, y = by }, { x = sx, y = by } }
+  end
+  out[#out + 1] = bridge
+  return out, bridge
 end

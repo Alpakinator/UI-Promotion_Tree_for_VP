@@ -1402,3 +1402,91 @@ function PipeManagerDrawCorner(x, y, side, dir, fillet, colour)
     drawCorner(x + legacyRouteUnit / 2, y + legacyRouteUnit / 2, kind, 1, 0, 0, colour)
   end
 end
+
+-- Last resort when a network cannot be drawn: every route on its own. Shared
+-- stretches and junctions lose their merged art, but no pipe is left out.
+-- A route whose elbows don't fit is drawn as plain runs.
+-- Draw what can be drawn: each route whole if it validates, else segment by
+-- segment, skipping (and counting) any segment the pipe art cannot show.
+function PipeManagerDrawRoutesLenient(routes, options)
+  local skipped = 0
+  if not instanceManager then
+    return 0
+  end
+  for _, route in ipairs(routes or {}) do
+    local points = route.points or {}
+    local owners = {}
+    if type(route.parent) == "string" and type(route.child) == "string" then
+      owners[1] = route.parent .. "\001" .. route.child
+    end
+    local settings = {
+      scale = options.scale,
+      offsetX = options.offsetX,
+      offsetY = options.offsetY,
+      nativeArt = options.nativeArt,
+      gaps = route.gaps,
+      owners = owners,
+    }
+    local ran, valid = pcall(PipeManagerValidatePath, points, settings)
+    if #points >= 2 and ran and valid then
+      PipeManagerDrawPath(points, settings)
+    else
+      for i = 1, #points - 1 do
+        local gaps = {}
+        for _, gap in ipairs(route.gaps or {}) do
+          if gap.segment == i then
+            gaps[#gaps + 1] = { segment = 1, from = gap.from, to = gap.to }
+          end
+        end
+        settings.gaps = gaps
+        local ran, ok = pcall(PipeManagerDrawPath, { points[i], points[i + 1] }, settings)
+        if not ran or not ok then
+          settings.gaps = nil
+          ran, ok = pcall(PipeManagerDrawPath, { points[i], points[i + 1] }, settings)
+          if not ran or not ok then
+            skipped = skipped + 1
+          end
+        end
+      end
+    end
+  end
+  return skipped
+end
+
+function PipeManagerDrawRoutesSeparately(routes, options)
+  if not instanceManager then
+    return false, "PipeManagerInit was not called"
+  end
+  for _, route in ipairs(routes) do
+    local owners = {}
+    if type(route.parent) == "string" and type(route.child) == "string" then
+      owners[1] = route.parent .. "\001" .. route.child
+    end
+    local settings = {
+      scale = options.scale,
+      offsetX = options.offsetX,
+      offsetY = options.offsetY,
+      nativeArt = options.nativeArt,
+      gaps = route.gaps,
+      owners = owners,
+    }
+    if PipeManagerValidatePath(route.points, settings) then
+      PipeManagerDrawPath(route.points, settings)
+    else
+      for i = 1, #route.points - 1 do
+        local gaps = {}
+        for _, gap in ipairs(route.gaps or {}) do
+          if gap.segment == i then
+            gaps[#gaps + 1] = { segment = 1, from = gap.from, to = gap.to }
+          end
+        end
+        settings.gaps = gaps
+        local ok, reason = PipeManagerDrawPath({ route.points[i], route.points[i + 1] }, settings)
+        if not ok then
+          return false, reason
+        end
+      end
+    end
+  end
+  return true
+end

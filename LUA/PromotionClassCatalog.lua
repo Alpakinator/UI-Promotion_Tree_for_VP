@@ -357,7 +357,7 @@ function Catalog.Build(data)
         graph = BuildPromotionGraph(combatClass, nil, profile)
         graphsByEligibility[key] = graph
       end
-      if not graph.invalid and #graph.order > 0 then
+      if #graph.order > 0 then
         local signature = combatClass .. "|" .. promotionMembershipSignature(graph)
         local matchingProfile = profilesBySignature[signature]
         if matchingProfile then

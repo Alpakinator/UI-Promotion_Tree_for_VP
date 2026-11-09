@@ -14,9 +14,7 @@ include("ButtonManager")
 include("PipeManager")
 include("PromotionUtils")
 include("PromotionClassCatalog")
-include("PromotionTreeStoredRows")
 include("PromotionTreeLayout")
-include("PromotionReviewedLayouts")
 include("PromotionPresentation")
 include("PromotionHover")
 include("SidebarCard")
@@ -301,8 +299,13 @@ function PlacePromotions(liveUnit, classKey, sourceX, sourceY)
     end
   end
   if graph.invalid then
-    unavailable("This promotion tree contains inconsistent prerequisite data.")
-  elseif #graph.order == 0 then
+    -- Inconsistent data (a cycle, an unknown prerequisite...) is logged; the
+    -- graph builder has already dropped what cannot be drawn.
+    for _, detail in ipairs(graph.diagnostics or {}) do
+      print("Promotion Tree data: " .. detail)
+    end
+  end
+  if #graph.order == 0 then
     unavailable("No promotions are available for this unit class.")
   else
     local layoutStart = perfClock and perfClock()
@@ -319,8 +322,9 @@ function PlacePromotions(liveUnit, classKey, sourceX, sourceY)
     end
     local layout
     layout, cacheHit = solve()
-    if usesLargeCards and (layout.overflow or not layout.valid or #layout.buttons == 0) then
-      -- Normal cards do not fit even at the smallest scale; Small cards may.
+    if usesLargeCards and (layout.tooTall or not layout.valid or #layout.buttons == 0) then
+      -- Normal cards are too tall for the screen even at the smallest scale
+      -- (it scrolls sideways, not vertically); Small cards may fit.
       Resize(config.small)
       Controls.ResizeButton:SetCheck(true)
       viewport = ResolvePromotionViewport()
@@ -335,23 +339,25 @@ function PlacePromotions(liveUnit, classKey, sourceX, sourceY)
     for _, detail in ipairs(layout.violations or {}) do
       print("Promotion Tree layout: " .. tostring(detail))
     end
-    if layout.overflow then
-      print("Promotion Tree: the tree is larger than the panel even at the smallest scale")
+    if layout.tooTall then
+      print("Promotion Tree: the tree is taller than the panel even at the smallest scale")
+    elseif layout.overflow then
+      print("Promotion Tree: the tree is wider than the panel; it scrolls sideways")
     end
     if #layout.buttons == 0 then
+      -- Only if both the live search and the emergency layout failed.
       unavailable("This promotion tree could not be arranged.")
     else
       local drawStart = perfClock and perfClock()
-      local drawn, reason =
-        DrawTreeLayout(layout, liveUnit, classKey, originX, originY, viewportH, graph)
+      local ran, err = pcall(DrawTreeLayout, layout, liveUnit, classKey, originX, originY, viewportH, graph)
+      if not ran then
+        print("Promotion Tree renderer: " .. tostring(err) .. "; drawing the plain tree")
+        DrawTreeLayoutBare(layout, liveUnit, classKey, originX, originY, graph)
+      end
       if perfClock then
         drawSeconds = perfClock() - drawStart
       end
-      if not drawn then
-        unavailable("This promotion tree could not be drawn within the display limits.")
-        print("Promotion Tree renderer: " .. tostring(reason))
-      end
-      layoutMethod = (layout.method or "?") .. (layout.stats and layout.stats.stored and " stored" or "")
+      layoutMethod = layout.method or "?"
       canvasWidth = (layout.contentWidth or 0) * (layout.scale or 1)
     end
   end
@@ -390,7 +396,15 @@ function DrawTreeLayout(layout, liveUnit, classKey, originX, originY, viewportH,
     )
   end
   if not routes then
-    return false, paintReason
+    -- Pipes that cannot be fitted to the fixed card art are drawn on their
+    -- logical lines instead.
+    print("Promotion Tree painted routes: " .. tostring(paintReason))
+    routes = {}
+    for _, list in ipairs({ layout.sourceRoutes or {}, layout.routes or {} }) do
+      for _, route in ipairs(list) do
+        routes[#routes + 1] = route
+      end
+    end
   end
   originY = originY
     + PromotionTreeVerticalOffset(
@@ -402,23 +416,17 @@ function DrawTreeLayout(layout, liveUnit, classKey, originX, originY, viewportH,
       routes,
       sidebarCenterY - originY
     )
-  local painted = {}
-  for i = 1, #routes do
-    painted[i] = routes[i]
-  end
   local boxWidth = liveUnit and unitCardWidth or classCardWidth
   local boxHeight = liveUnit and unitCardHeight or classCardHeight
-  local bridge = PromotionUnitSourceBridge(
+  local painted, bridge = PromotionJoinUnitSource(
     layout,
+    routes,
     originX,
     originY,
     sidebarLeftMargin + boxWidth + 2,
     sidebarCenterY,
     boxHeight
   )
-  if bridge then
-    painted[#painted + 1] = bridge
-  end
   local pipeOptions = {
     scale = scale,
     offsetX = originX,
@@ -430,7 +438,11 @@ function DrawTreeLayout(layout, liveUnit, classKey, originX, originY, viewportH,
     -- A short sidebar dogleg cannot fit full native junction tiles. Preserve
     -- its exact centre attachment using straight native runs in that case.
     print("Promotion Tree box stem: " .. tostring(reason))
-    ok, reason = PipeManagerDrawNetwork(routes, pipeOptions)
+    local tree = {}
+    for i = 1, #painted - 1 do
+      tree[i] = painted[i]
+    end
+    ok, reason = PipeManagerDrawNetwork(tree, pipeOptions)
     if ok then
       for i = 1, #bridge.points - 1 do
         ok, reason = PipeManagerDrawPath({ bridge.points[i], bridge.points[i + 1] }, pipeOptions)
@@ -441,12 +453,59 @@ function DrawTreeLayout(layout, liveUnit, classKey, originX, originY, viewportH,
     end
   end
   if not ok then
+    -- The layout engine leaves no unrelated pipes sharing a line, but should
+    -- a network still not draw, show the tree with every pipe drawn alone
+    -- rather than no tree.
+    print("Promotion Tree pipes drawn one by one: " .. tostring(reason))
     PipeManagerReset()
-    return false, reason
+    ok, reason = PipeManagerDrawRoutesSeparately(painted, pipeOptions)
+  end
+  if not ok then
+    -- Last resort: every segment that can be drawn is drawn; the tree is
+    -- never left without its cards.
+    print("Promotion Tree pipes drawn segment by segment: " .. tostring(reason))
+    PipeManagerReset()
+    local skipped = PipeManagerDrawRoutesLenient(painted, pipeOptions)
+    if skipped > 0 then
+      print("Promotion Tree: " .. skipped .. " pipe segments could not be drawn")
+    end
   end
   ResetPromotionHover(graph)
   for _, button in ipairs(layout.buttons) do
-    DrawPromotionButton(
+    local drawn, err = pcall(
+      DrawPromotionButton,
+      originX + button.x * scale,
+      originY + button.y * scale,
+      liveUnit,
+      button.type,
+      classKey,
+      graph.nodes[button.type]
+    )
+    if not drawn then
+      print("Promotion Tree card " .. tostring(button.type) .. ": " .. tostring(err))
+    end
+  end
+  return true
+end
+
+-- Cards and plain pipes only, without the unit box join or centring: used
+-- if DrawTreeLayout itself raised an error.
+function DrawTreeLayoutBare(layout, liveUnit, classKey, originX, originY, graph)
+  local scale = layout.scale or 1
+  ButtonManagerReset()
+  PipeManagerReset()
+  ButtonManagerSetScale(scale)
+  local routes = {}
+  for _, list in ipairs({ layout.sourceRoutes or {}, layout.routes or {} }) do
+    for _, route in ipairs(list) do
+      routes[#routes + 1] = route
+    end
+  end
+  PipeManagerDrawRoutesLenient(routes, { scale = scale, offsetX = originX, offsetY = originY, nativeArt = scale < 0.999 })
+  ResetPromotionHover(graph)
+  for _, button in ipairs(layout.buttons) do
+    pcall(
+      DrawPromotionButton,
       originX + button.x * scale,
       originY + button.y * scale,
       liveUnit,
@@ -455,7 +514,6 @@ function DrawTreeLayout(layout, liveUnit, classKey, originX, originY, viewportH,
       graph.nodes[button.type]
     )
   end
-  return true
 end
 
 function AdjustPanelHeight(panelHeight)

@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Mod id="1f0a153b-26ae-4496-a2c0-a106d9b43c95" version="27">
+<Mod id="1f0a153b-26ae-4496-a2c0-a106d9b43c95" version="28">
   <Properties>
     <Name>UI - Promotion Tree for VP</Name>
     <Teaser>Promotion trees and unit statistics for Vox Populi</Teaser>
@@ -39,21 +39,19 @@ Layout derived from http://gaming.stackexchange.com/questions/15846/123</Descrip
     <File md5="8592E1C1E3D4933D9F4BBE3C28B96564" import="1">LUA/ButtonManager.lua</File>
     <File md5="8B7104F34E47D1824CFFAF1AB03FFD48" import="1">LUA/ControlUtils.lua</File>
     <File md5="F86593F57536E8314F9D7210AEF97CD4" import="1">LUA/DebugPrint.lua</File>
-    <File md5="CC85EACE2E0388F01ECE78B1EFBD417B" import="1">LUA/PipeManager.lua</File>
-    <File md5="B92624FE4917A41AB220DDE1711D78CC" import="1">LUA/PromotionClassCatalog.lua</File>
+    <File md5="45EDD6412D11883E563776E494C29B5C" import="1">LUA/PipeManager.lua</File>
+    <File md5="E1AD8A4E81D1042472DD48A3AE44D03A" import="1">LUA/PromotionClassCatalog.lua</File>
     <File md5="BC182DC5DB2BC62E56D6986C32BB678B" import="1">LUA/PromotionClassPlanner.lua</File>
     <File md5="C86E2123090014AC7D4F00F015A4419F" import="1">LUA/PromotionExtraPromotions.lua</File>
     <File md5="B3EF67F22A154109BCCC2F723C10567E" import="1">LUA/PromotionHover.lua</File>
-    <File md5="50B925D343CCECF29A3EC55B95E66582" import="1">LUA/PromotionPresentation.lua</File>
-    <File md5="6A1379EE7B9522FB78EB3F4A69156604" import="1">LUA/PromotionReviewedLayouts.lua</File>
+    <File md5="7BB0381772A65B30C8ABC690E27A62F4" import="1">LUA/PromotionPresentation.lua</File>
     <File md5="20DF40C97CE25CEDDE72F0868A9058D3" import="1">LUA/PromotionStatsPanel.lua</File>
-    <File md5="4FFF3AC8A193B959923A804BE898F15F" import="1">LUA/PromotionTreeLayout.lua</File>
-    <File md5="1633BF0EA77C257E26570E95D59ADA68" import="1">LUA/PromotionTreeStoredRows.lua</File>
+    <File md5="CC81702B04F071B5F9F66609776B865B" import="1">LUA/PromotionTreeLayout.lua</File>
     <File md5="72177CA5AAF6B1586D382CDFD092D5AA" import="1">LUA/PromotionUnitStats.lua</File>
-    <File md5="6CB63F6D9AC1F81B1A0D5AF6BD4AB53B" import="1">LUA/PromotionUtils.lua</File>
+    <File md5="A1C7DEC8487B41A57906EE9FDD60B445" import="1">LUA/PromotionUtils.lua</File>
     <File md5="5DE4A987126A84A9A1D8E2DBDD984C0F" import="1">LUA/SidebarCard.lua</File>
     <File md5="D276550C4D80DF9CB054FC4B1A5884A7" import="0">SQL/UIPromotionTree.sql</File>
-    <File md5="D6C6B8E944D761BBD57BC7F040A96DBC" import="0">UI/PromotionTree.lua</File>
+    <File md5="EEAED4F29E7BDF835D95AB256FC292E4" import="0">UI/PromotionTree.lua</File>
     <File md5="672ECAC6F10942313B01F456E09EB1A9" import="0">UI/PromotionTree.xml</File>
     <File md5="31A8147B07B6E9BAE9749D691F3448A4" import="0">XML/UIPromotionTree.xml</File>
   </Files>

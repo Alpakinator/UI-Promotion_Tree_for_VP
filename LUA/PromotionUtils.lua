@@ -309,10 +309,11 @@ function BuildPromotionGraph(classKey, liveUnit, profile)
     end
   end
 
-  -- Diagnose malformed cycles rather than letting assignColumns silently make
-  -- a backwards edge.  A future caller can refuse to draw an invalid graph.
+  -- Diagnose malformed cycles, and drop the edge that closes each one so the
+  -- tree can still be laid out and drawn (the UI never refuses a tree).
   local visit, path, inPath = {}, {}, {}
   local hasCycle = false
+  local backEdges = {}
   local function inspect(promotionType)
     visit[promotionType] = 1
     table.insert(path, promotionType)
@@ -329,6 +330,7 @@ function BuildPromotionGraph(classKey, liveUnit, profile)
         table.insert(cycle, childType)
         table.insert(diagnostics, "prerequisite cycle " .. table.concat(cycle, " -> "))
         hasCycle = true
+        backEdges[#backEdges + 1] = { promotionType, childType }
       end
     end
     inPath[promotionType] = nil
@@ -339,6 +341,18 @@ function BuildPromotionGraph(classKey, liveUnit, profile)
     if visit[order[i]] == nil then
       inspect(order[i])
     end
+  end
+  local function without(list, value)
+    for i = #list, 1, -1 do
+      if list[i] == value then
+        table.remove(list, i)
+      end
+    end
+  end
+  for _, edge in ipairs(backEdges) do
+    without(children[edge[1]], edge[2])
+    without(parents[edge[2]], edge[1])
+    table.insert(diagnostics, "ignored prerequisite link " .. edge[1] .. " -> " .. edge[2])
   end
 
   local free = profile and profile.Free
