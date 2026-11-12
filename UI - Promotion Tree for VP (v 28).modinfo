@@ -46,7 +46,7 @@ Layout derived from http://gaming.stackexchange.com/questions/15846/123</Descrip
     <File md5="B3EF67F22A154109BCCC2F723C10567E" import="1">LUA/PromotionHover.lua</File>
     <File md5="7BB0381772A65B30C8ABC690E27A62F4" import="1">LUA/PromotionPresentation.lua</File>
     <File md5="20DF40C97CE25CEDDE72F0868A9058D3" import="1">LUA/PromotionStatsPanel.lua</File>
-    <File md5="CC81702B04F071B5F9F66609776B865B" import="1">LUA/PromotionTreeLayout.lua</File>
+    <File md5="7204B397ABC7CFAC79F67C83A4E31768" import="1">LUA/PromotionTreeLayout.lua</File>
     <File md5="72177CA5AAF6B1586D382CDFD092D5AA" import="1">LUA/PromotionUnitStats.lua</File>
     <File md5="A1C7DEC8487B41A57906EE9FDD60B445" import="1">LUA/PromotionUtils.lua</File>
     <File md5="5DE4A987126A84A9A1D8E2DBDD984C0F" import="1">LUA/SidebarCard.lua</File>

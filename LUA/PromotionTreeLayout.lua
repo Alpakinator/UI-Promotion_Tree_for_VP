@@ -3574,39 +3574,6 @@ do
   end
 end
 
-local function familyPriority(graph, g, s)
-  local family = {}
-  local function familyOf(node)
-    if family[node] then
-      return family[node]
-    end
-    local parents = g.parents[node]
-    if #parents == 1 then
-      family[node] = familyOf(parents[1])
-    else
-      family[node] = node
-    end
-    return family[node]
-  end
-  local priority = {}
-  local starts = {}
-  for node = 1, g.n do
-    local start = familyOf(node)
-    if not starts[start] then
-      starts[start] = true
-      local data = graph.nodes[g.names[start]]
-      local external = #g.parents[start] == 0
-        and ((data.requiredPrereq ~= nil) or #(data.orPrereqs or {}) > 0)
-      local r = s.cardItem[start].object.row
-      local order = type(data.id) == "number" and data.id or 100000 + r
-      priority[start] = (external and 0 or 1000000) - order * 10 - g.rank[start]
-    end
-  end
-  return function(node)
-    return priority[familyOf(node)]
-  end
-end
-
 --------------------------------------------------------------------------
 -- Solve
 --------------------------------------------------------------------------
@@ -4007,12 +3974,8 @@ function PromotionTreeLayoutSolve(graph, geometry)
     end
   end
 
-  -- Crossings: the lower-priority promotion path passes under.
-  local priorityOf = familyPriority(graph, g, s)
-  local routePriority = {}
-  for i, e in ipairs(g.edges) do
-    routePriority[routes[i]] = priorityOf(e.parent) * 1000 - g.rank[e.parent]
-  end
+  -- Crossings: the vertical pipe always passes under the horizontal one, so
+  -- left-to-right paths read unbroken and the pattern is predictable.
   local crossingPoints = {}
   for c = 0, g.columns - 2 do
     for _, hit in ipairs(routed[c].crossings) do
@@ -4024,26 +3987,20 @@ function PromotionTreeLayoutSolve(graph, geometry)
   local underpasses = {}
   for _, point in ipairs(crossingPoints) do
     local horizontal, vertical = {}, {}
-    local hp, vp = -INF, -INF
     for _, route in ipairs(routes) do
       local p = route.points
       for k = 1, #p - 1 do
         local a, b = p[k], p[k + 1]
         if a.y == b.y and a.y == point.y and point.x > min(a.x, b.x) and point.x < max(a.x, b.x) then
           horizontal[#horizontal + 1] = { route = route, segment = k, at = abs(point.x - a.x) }
-          hp = max(hp, routePriority[route])
         elseif
           a.x == b.x and a.x == point.x and point.y > min(a.y, b.y) and point.y < max(a.y, b.y)
         then
           vertical[#vertical + 1] = { route = route, segment = k, at = abs(point.y - a.y) }
-          vp = max(vp, routePriority[route])
         end
       end
     end
     local under, over = vertical, horizontal
-    if hp < vp then
-      under, over = horizontal, vertical
-    end
     for _, hit in ipairs(under) do
       hit.route.gaps[#hit.route.gaps + 1] =
         { segment = hit.segment, from = hit.at - halfGap, to = hit.at + halfGap }
