@@ -1,0 +1,30 @@
+#!/bin/sh
+# Version tags: the release checks the workflow repeats (scripts/checks.py tag).
+# Branches that change LUA/: every tree through the layout oracles, when the
+# local harness (devtools/, kept out of git) is in the main checkout.
+top=$(git rev-parse --show-toplevel)
+main=$(cd "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  case "$remote_ref" in
+    refs/tags/v*)
+      python3 "$top/scripts/checks.py" tag "${remote_ref#refs/tags/}" || status=1
+      ;;
+    refs/heads/*)
+      if [ "$remote_sha" != "$zero" ] && git diff --quiet "$remote_sha" "$local_sha" -- LUA 2>/dev/null; then
+        continue
+      fi
+      if [ ! -x "$main/devtools/oracle_check.sh" ]; then
+        echo "pre-push: no devtools/oracle_check.sh in $main; layout oracles skipped" >&2
+        continue
+      fi
+      tmp=$(mktemp -d)
+      git archive "$local_sha" LUA | tar -x -C "$tmp"
+      PROMOTREE_LUA="$tmp/LUA" "$main/devtools/oracle_check.sh" --no-export --results "$tmp" || status=1
+      rm -rf "$tmp"
+      ;;
+  esac
+done
+exit $status

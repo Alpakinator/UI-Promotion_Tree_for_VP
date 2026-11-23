@@ -1,0 +1,4 @@
+#!/bin/sh
+# What this commit would hold: md5s, version, per-tree tables, refusals,
+# local-only files, lint. The release workflow runs the same script.
+exec python3 "$(git rev-parse --show-toplevel)/scripts/checks.py"
